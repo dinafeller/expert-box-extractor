@@ -69,7 +69,7 @@ def extract():
     content_type = (pdf_resp.headers.get("content-type") or "").lower()
     blob = pdf_resp.content
 
-    # 4) Extract text: PDF only for now (we'll extend later)
+    # 4) Extract text: PDF only for now
     text = ""
     if "pdf" in content_type or storage_path.lower().endswith(".pdf"):
         try:
@@ -89,30 +89,27 @@ def extract():
         except Exception:
             text = ""
 
-preview = text[:2000]
+    preview = text[:2000]
 
-# --- simple chunking ---
-CHUNK_SIZE = 1200
+    # --- simple chunking ---
+    CHUNK_SIZE = 1200
+    chunks = []
+    if text:
+        for i in range(0, len(text), CHUNK_SIZE):
+            chunks.append(text[i:i + CHUNK_SIZE])
 
-chunks = []
-if text:
-    for i in range(0, len(text), CHUNK_SIZE):
-        chunk = text[i:i + CHUNK_SIZE]
-        chunks.append(chunk)
-    
-return jsonify({
-    "ok": True,
-    "material_id": mat["id"],
-    "storage_path": storage_path,
-    "content_type": content_type,
-    "text_len": len(text),
-    "preview": preview,
-    "text": text,
-    "chunks": chunks,
-    "chunks_count": len(chunks),
-    "note": "Extractor service: returns full text + simple chunks."
-}), 200
-
+    return jsonify({
+        "ok": True,
+        "material_id": mat["id"],
+        "storage_path": storage_path,
+        "content_type": content_type,
+        "text_len": len(text),
+        "preview": preview,
+        "text": text,
+        "chunks": chunks,
+        "chunks_count": len(chunks),
+        "note": "Extractor service: returns full text + simple chunks."
+    }), 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
