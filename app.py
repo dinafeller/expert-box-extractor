@@ -89,7 +89,7 @@ def extract():
         except Exception:
             text = ""
 
-    preview = text[:2000]
+preview = text[:2000]
 
 # --- simple chunking ---
 CHUNK_SIZE = 1200
@@ -100,7 +100,7 @@ if text:
         chunk = text[i:i + CHUNK_SIZE]
         chunks.append(chunk)
     
-    return jsonify({
+return jsonify({
     "ok": True,
     "material_id": mat["id"],
     "storage_path": storage_path,
