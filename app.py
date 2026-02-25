@@ -92,14 +92,15 @@ def extract():
     preview = text[:2000]
 
     return jsonify({
-        "ok": True,
-        "material_id": mat["id"],
-        "storage_path": storage_path,
-        "content_type": content_type,
-        "text_len": len(text),
-        "preview": preview,
-        "note": "Extractor service: returns extracted text preview (no chunking)."
-    }), 200
+    "ok": True,
+    "material_id": mat["id"],
+    "storage_path": storage_path,
+    "content_type": content_type,
+    "text_len": len(text),
+    "preview": preview,
+    "text": text,
+    "note": "Extractor service: returns extracted full text (no chunking)."
+}), 200
 
 
 if __name__ == "__main__":
