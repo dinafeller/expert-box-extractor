@@ -91,6 +91,15 @@ def extract():
 
     preview = text[:2000]
 
+# --- simple chunking ---
+CHUNK_SIZE = 1200
+
+chunks = []
+if text:
+    for i in range(0, len(text), CHUNK_SIZE):
+        chunk = text[i:i + CHUNK_SIZE]
+        chunks.append(chunk)
+    
     return jsonify({
     "ok": True,
     "material_id": mat["id"],
@@ -99,7 +108,9 @@ def extract():
     "text_len": len(text),
     "preview": preview,
     "text": text,
-    "note": "Extractor service: returns extracted full text (no chunking)."
+    "chunks": chunks,
+    "chunks_count": len(chunks),
+    "note": "Extractor service: returns full text + simple chunks."
 }), 200
 
 
