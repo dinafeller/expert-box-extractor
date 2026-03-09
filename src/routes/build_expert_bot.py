@@ -12,5 +12,5 @@ def build_expert_bot():
     if not expert_id:
         return jsonify({"error": "expert_id is required"}), 400
 
-        result = run_build_expert_bot(expert_id)
+    result = run_build_expert_bot(expert_id)
     return jsonify(result), 200 if result.get("ok") else 400
