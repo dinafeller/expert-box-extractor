@@ -50,6 +50,23 @@ def build_expert_bot(expert_id: str):
         json={"bot_status": "building"},
         timeout=30,
     )
+    # cleanup previous build
+    r3 = requests.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/cleanup_expert_build",
+        headers=headers,
+        json={"p_expert_id": expert_id},
+        timeout=30,
+    )
+
+    if r3.status_code not in (200, 204):
+        return {
+            "ok": False,
+            "build_result": "failed",
+            "bot_status": "failed",
+            "error": "cleanup_expert_build failed",
+            "status": r3.status_code,
+            "body": r3.text
+        }
 
     if r2.status_code not in (200, 204):
         return {
