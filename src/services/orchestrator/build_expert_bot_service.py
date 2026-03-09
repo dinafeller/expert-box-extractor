@@ -47,7 +47,8 @@ def build_expert_bot(expert_id: str):
             "bot_status": "failed",
             "error": "expert not found"
         }
-        # log build start
+      
+    # log build start
     r_log = requests.post(
         f"{SUPABASE_URL}/rest/v1/bot_build_logs",
         headers=headers,
@@ -108,6 +109,18 @@ def build_expert_bot(expert_id: str):
             "body": r3.text
         }
 
+    requests.post(
+        f"{SUPABASE_URL}/rest/v1/bot_build_logs",
+        headers=headers,
+        json={
+            "expert_id": expert_id,
+            "build_step": "cleanup",
+            "status": "info",
+            "message": "cleanup done"
+        },
+        timeout=30,
+    )
+    
     # chunk materials
     r4 = requests.post(
         f"{SUPABASE_URL}/rest/v1/rpc/chunk_all_materials_for_expert",
@@ -125,7 +138,19 @@ def build_expert_bot(expert_id: str):
             "status": r4.status_code,
             "body": r4.text
         }
+    requests.post(
+        f"{SUPABASE_URL}/rest/v1/bot_build_logs",
+        headers=headers,
+        json={
+            "expert_id": expert_id,
+            "build_step": "chunking",
+            "status": "info",
+            "message": "chunking done"
+        },
+        timeout=30,
+    )
 
+    
     # embed chunks
     r5 = requests.post(
         f"{SUPABASE_URL}/functions/v1/embed_chunks",
@@ -144,6 +169,18 @@ def build_expert_bot(expert_id: str):
             "body": r5.text
         }
 
+    requests.post(
+        f"{SUPABASE_URL}/rest/v1/bot_build_logs",
+        headers=headers,
+        json={
+            "expert_id": expert_id,
+            "build_step": "embedding",
+            "status": "info",
+            "message": "embedding triggered"
+        },
+        timeout=30,
+    )
+    
     # classify chunks
     try:
         requests.post(
@@ -155,6 +192,18 @@ def build_expert_bot(expert_id: str):
     except requests.exceptions.RequestException:
         pass
 
+    requests.post(
+        f"{SUPABASE_URL}/rest/v1/bot_build_logs",
+        headers=headers,
+        json={
+            "expert_id": expert_id,
+            "build_step": "classification",
+            "status": "info",
+            "message": "classification triggered"
+        },
+        timeout=30,
+    )
+    
     # quality gate: count chunks
     r_chunks = requests.get(
         f"{SUPABASE_URL}/rest/v1/material_chunks",
@@ -186,6 +235,19 @@ def build_expert_bot(expert_id: str):
             "error": "quality gate failed: not enough chunks",
             "chunks_count": chunks_count
         }
+
+    requests.post(
+        f"{SUPABASE_URL}/rest/v1/bot_build_logs",
+        headers=headers,
+        json={
+            "expert_id": expert_id,
+            "build_step": "quality_gate",
+            "status": "info",
+            "message": "quality gate passed"
+        },
+        timeout=30,
+    )
+
     
     # finalize build
     r7 = requests.patch(
@@ -206,6 +268,19 @@ def build_expert_bot(expert_id: str):
             "body": r7.text
         }
 
+    requests.post(
+        f"{SUPABASE_URL}/rest/v1/bot_build_logs",
+        headers=headers,
+        json={
+            "expert_id": expert_id,
+            "build_step": "activation",
+            "status": "info",
+            "message": "bot activated"
+        },
+        timeout=30,
+    )
+
+    
     return {
         "ok": True,
         "expert_id": expert_id,
