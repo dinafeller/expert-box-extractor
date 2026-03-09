@@ -42,6 +42,24 @@ def build_expert_bot(expert_id: str):
         }
 
     expert = rows[0]
+    # set bot_status = building
+    r2 = requests.patch(
+        f"{SUPABASE_URL}/rest/v1/experts",
+        headers=headers,
+        params={"id": f"eq.{expert_id}"},
+        json={"bot_status": "building"},
+        timeout=30,
+    )
+
+    if r2.status_code not in (200, 204):
+        return {
+            "ok": False,
+            "build_result": "failed",
+            "bot_status": "failed",
+            "error": "failed to set bot_status building",
+            "status": r2.status_code,
+            "body": r2.text
+        }
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return {
             "ok": False,
@@ -63,5 +81,5 @@ def build_expert_bot(expert_id: str):
         "expert_id": expert_id,
         "build_result": "success",
         "bot_status": "building",
-        "message": "build_expert_bot service connected"
+        "message": "build started"
     }
