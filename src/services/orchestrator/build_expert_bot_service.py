@@ -126,7 +126,7 @@ def build_expert_bot(expert_id: str):
         f"{SUPABASE_URL}/functions/v1/classify_chunks",
         headers=function_headers,
         json={"expert_id": expert_id},
-        timeout=120,
+        timeout=300,
     )
 
     if r6.status_code not in (200, 201):
