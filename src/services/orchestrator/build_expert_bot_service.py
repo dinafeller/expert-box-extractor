@@ -168,7 +168,7 @@ def build_expert_bot(expert_id: str):
         f"{SUPABASE_URL}/rest/v1/experts",
         headers=headers,
         params={"id": f"eq.{expert_id}"},
-        json={"bot_status": "ready"},
+        json={"bot_status": "active"},
         timeout=30,
     )
 
@@ -186,6 +186,6 @@ def build_expert_bot(expert_id: str):
         "ok": True,
         "expert_id": expert_id,
         "build_result": "success",
-        "bot_status": "ready",
+        "bot_status": "active",
         "message": "bot build completed"
     }
