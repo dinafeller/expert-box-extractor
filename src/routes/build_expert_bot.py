@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify
+from src.services.orchestrator.build_expert_bot_service import build_expert_bot as run_build_expert_bot
 
 build_expert_bot_bp = Blueprint("build_expert_bot", __name__)
 
@@ -11,8 +12,5 @@ def build_expert_bot():
     if not expert_id:
         return jsonify({"error": "expert_id is required"}), 400
 
-    return jsonify({
-        "ok": True,
-        "message": "Build orchestrator endpoint is alive",
-        "expert_id": expert_id
-    })
+        result = run_build_expert_bot(expert_id)
+    return jsonify(result), 200 if result.get("ok") else 400
