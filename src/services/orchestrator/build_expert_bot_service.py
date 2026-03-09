@@ -121,7 +121,7 @@ def build_expert_bot(expert_id: str):
             "body": r5.text
         }
 
-        # classify chunks
+    # classify chunks
     try:
         requests.post(
             f"{SUPABASE_URL}/functions/v1/classify_chunks",
@@ -132,6 +132,38 @@ def build_expert_bot(expert_id: str):
     except requests.exceptions.RequestException:
         pass
 
+    # quality gate: count chunks
+    r_chunks = requests.get(
+        f"{SUPABASE_URL}/rest/v1/material_chunks",
+        headers=headers,
+        params={
+            "expert_id": f"eq.{expert_id}",
+            "select": "id",
+        },
+        timeout=30,
+    )
+
+    if r_chunks.status_code != 200:
+        return {
+            "ok": False,
+            "build_result": "failed",
+            "bot_status": "failed",
+            "error": "failed to count material_chunks",
+            "status": r_chunks.status_code,
+            "body": r_chunks.text
+        }
+
+    chunks_count = len(r_chunks.json())
+
+    if chunks_count < 3:
+        return {
+            "ok": False,
+            "build_result": "failed",
+            "bot_status": "failed",
+            "error": "quality gate failed: not enough chunks",
+            "chunks_count": chunks_count
+        }
+    
     # finalize build
     r7 = requests.patch(
         f"{SUPABASE_URL}/rest/v1/experts",
