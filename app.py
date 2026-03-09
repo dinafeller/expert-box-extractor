@@ -1,8 +1,10 @@
 import os
 import requests
 from flask import Flask, request, jsonify
+from src.routes.build_expert_bot import build_expert_bot_bp
 
 app = Flask(__name__)
+app.register_blueprint(build_expert_bot_bp)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
