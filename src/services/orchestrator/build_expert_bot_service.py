@@ -47,8 +47,8 @@ def build_expert_bot(expert_id: str):
             "bot_status": "failed",
             "error": "expert not found"
         }
-    # log build start
-    requests.post(
+        # log build start
+    r_log = requests.post(
         f"{SUPABASE_URL}/rest/v1/bot_build_logs",
         headers=headers,
         json={
@@ -59,6 +59,16 @@ def build_expert_bot(expert_id: str):
         },
         timeout=30,
     )
+
+    if r_log.status_code not in (200, 201):
+        return {
+            "ok": False,
+            "build_result": "failed",
+            "bot_status": "failed",
+            "error": "failed to write build start log",
+            "status": r_log.status_code,
+            "body": r_log.text
+        }
 
     
     # set bot_status = building
