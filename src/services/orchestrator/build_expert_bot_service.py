@@ -121,13 +121,16 @@ def build_expert_bot(expert_id: str):
             "body": r5.text
         }
 
-    # classify chunks
-    r6 = requests.post(
-        f"{SUPABASE_URL}/functions/v1/classify_chunks",
-        headers=function_headers,
-        json={"expert_id": expert_id},
-        timeout=10,
-    )
+        # classify chunks
+    try:
+        requests.post(
+            f"{SUPABASE_URL}/functions/v1/classify_chunks",
+            headers=function_headers,
+            json={"expert_id": expert_id},
+            timeout=10,
+        )
+    except requests.exceptions.RequestException:
+        pass
 
     # finalize build
     r7 = requests.patch(
