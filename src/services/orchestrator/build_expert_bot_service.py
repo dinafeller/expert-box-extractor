@@ -162,3 +162,30 @@ def build_expert_bot(expert_id: str):
         "bot_status": "building",
         "message": "build started"
     }
+
+    # finalize build
+    r7 = requests.patch(
+        f"{SUPABASE_URL}/rest/v1/experts",
+        headers=headers,
+        params={"id": f"eq.{expert_id}"},
+        json={"bot_status": "ready"},
+        timeout=30,
+    )
+
+    if r7.status_code not in (200, 204):
+        return {
+            "ok": False,
+            "build_result": "failed",
+            "bot_status": "failed",
+            "error": "failed to set bot_status ready",
+            "status": r7.status_code,
+            "body": r7.text
+        }
+
+    return {
+        "ok": True,
+        "expert_id": expert_id,
+        "build_result": "success",
+        "bot_status": "ready",
+        "message": "bot build completed"
+    }
