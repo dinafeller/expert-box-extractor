@@ -9,6 +9,13 @@ headers = {
     "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
 }
 
+function_headers = {
+    "apikey": SUPABASE_SERVICE_ROLE_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    "Content-Type": "application/json",
+}
+
+
 def build_expert_bot(expert_id: str):
     # check expert exists
     r = requests.get(
@@ -41,7 +48,6 @@ def build_expert_bot(expert_id: str):
             "error": "expert not found"
         }
 
-    expert = rows[0]
     # set bot_status = building
     r2 = requests.patch(
         f"{SUPABASE_URL}/rest/v1/experts",
@@ -50,6 +56,17 @@ def build_expert_bot(expert_id: str):
         json={"bot_status": "building"},
         timeout=30,
     )
+
+    if r2.status_code not in (200, 204):
+        return {
+            "ok": False,
+            "build_result": "failed",
+            "bot_status": "failed",
+            "error": "failed to set bot_status building",
+            "status": r2.status_code,
+            "body": r2.text
+        }
+
     # cleanup previous build
     r3 = requests.post(
         f"{SUPABASE_URL}/rest/v1/rpc/cleanup_expert_build",
@@ -67,7 +84,7 @@ def build_expert_bot(expert_id: str):
             "status": r3.status_code,
             "body": r3.text
         }
-        
+
     # chunk materials
     r4 = requests.post(
         f"{SUPABASE_URL}/rest/v1/rpc/chunk_all_materials_for_expert",
@@ -89,11 +106,7 @@ def build_expert_bot(expert_id: str):
     # embed chunks
     r5 = requests.post(
         f"{SUPABASE_URL}/functions/v1/embed_chunks",
-        headers={
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-            "Content-Type": "application/json",
-        },
+        headers=function_headers,
         json={"expert_id": expert_id},
         timeout=120,
     )
@@ -111,11 +124,7 @@ def build_expert_bot(expert_id: str):
     # classify chunks
     r6 = requests.post(
         f"{SUPABASE_URL}/functions/v1/classify_chunks",
-        headers={
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-            "Content-Type": "application/json",
-        },
+        headers=function_headers,
         json={"expert_id": expert_id},
         timeout=120,
     )
@@ -130,17 +139,6 @@ def build_expert_bot(expert_id: str):
             "body": r6.text
         }
 
-    if r2.status_code not in (200, 204):
-        return {
-            "ok": False,
-            "build_result": "failed",
-            "bot_status": "failed",
-            "error": "failed to set bot_status building",
-            "status": r2.status_code,
-            "body": r2.text
-        }
-    
-    
     # finalize build
     r7 = requests.patch(
         f"{SUPABASE_URL}/rest/v1/experts",
@@ -155,7 +153,7 @@ def build_expert_bot(expert_id: str):
             "ok": False,
             "build_result": "failed",
             "bot_status": "failed",
-            "error": "failed to set bot_status ready",
+            "error": "failed to set bot_status active",
             "status": r7.status_code,
             "body": r7.text
         }
