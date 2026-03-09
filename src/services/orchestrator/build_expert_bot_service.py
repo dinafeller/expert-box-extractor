@@ -86,6 +86,28 @@ def build_expert_bot(expert_id: str):
             "body": r4.text
         }
 
+    # embed chunks
+    r5 = requests.post(
+        f"{SUPABASE_URL}/functions/v1/embed_chunks",
+        headers={
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={"expert_id": expert_id},
+        timeout=120,
+    )
+
+    if r5.status_code not in (200, 201):
+        return {
+            "ok": False,
+            "build_result": "failed",
+            "bot_status": "failed",
+            "error": "embed_chunks failed",
+            "status": r5.status_code,
+            "body": r5.text
+        }
+
     if r2.status_code not in (200, 204):
         return {
             "ok": False,
