@@ -47,7 +47,20 @@ def build_expert_bot(expert_id: str):
             "bot_status": "failed",
             "error": "expert not found"
         }
+    # log build start
+    requests.post(
+        f"{SUPABASE_URL}/rest/v1/bot_build_logs",
+        headers=headers,
+        json={
+            "expert_id": expert_id,
+            "build_step": "build",
+            "status": "info",
+            "message": "build started from orchestrator"
+        },
+        timeout=30,
+    )
 
+    
     # set bot_status = building
     r2 = requests.patch(
         f"{SUPABASE_URL}/rest/v1/experts",
