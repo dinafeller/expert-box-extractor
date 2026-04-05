@@ -1,5 +1,7 @@
 import os
 import io
+from datetime import datetime
+
 import requests
 from flask import Flask, request, jsonify
 from src.routes.build_expert_bot import build_expert_bot_bp
@@ -51,7 +53,6 @@ def extract():
         return jsonify({"error": "Missing env SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"}), 500
 
     try:
-        # 1) Fetch material from Supabase
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/materials",
             headers=supabase_headers(),
@@ -78,7 +79,6 @@ def extract():
             })
             return jsonify({"error": "material.storage_path is empty"}), 400
 
-        # 2) Create signed URL for download (private bucket)
         r2 = requests.post(
             f"{SUPABASE_URL}/storage/v1/object/sign/{BUCKET}/{storage_path}",
             headers=supabase_headers(),
@@ -110,7 +110,6 @@ def extract():
 
         file_url = f"{SUPABASE_URL}/storage/v1{signed_path}"
 
-        # 3) Download file bytes
         file_resp = requests.get(file_url, timeout=60)
         if file_resp.status_code != 200:
             update_material(material_id, {
@@ -126,7 +125,6 @@ def extract():
         blob = file_resp.content
         lower_path = storage_path.lower()
 
-        # 4) Extract text
         text = ""
 
         if "pdf" in content_type or lower_path.endswith(".pdf"):
@@ -162,13 +160,12 @@ def extract():
             except Exception:
                 text = ""
 
-        # 5) Save result back to Supabase
         if text and len(text) >= 50:
             save_resp = update_material(material_id, {
                 "extracted_text": text,
                 "extraction_status": "extracted",
                 "extraction_error": None,
-                "extracted_at": requests.utils.formatdate(usegmt=True),
+                "extracted_at": datetime.utcnow().isoformat(),
             })
             if save_resp.status_code not in (200, 204):
                 return jsonify({
@@ -181,7 +178,7 @@ def extract():
                 "extracted_text": text or None,
                 "extraction_status": "empty",
                 "extraction_error": "Document text too short or empty",
-                "extracted_at": requests.utils.formatdate(usegmt=True),
+                "extracted_at": datetime.utcnow().isoformat(),
             })
             if save_resp.status_code not in (200, 204):
                 return jsonify({
