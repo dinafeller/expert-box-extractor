@@ -56,6 +56,7 @@ def extract_youtube_id(url: str):
     patterns = [
         r"youtube\.com/watch\?v=([^&]+)",
         r"youtu\.be/([^?]+)",
+        r"youtube\.com/shorts/([^?&/]+)",
     ]
     for p in patterns:
         m = re.search(p, url)
@@ -68,7 +69,7 @@ def extract_video_text(url: str):
     video_id = extract_youtube_id(url)
 
     if not video_id:
-        return ""
+        raise Exception("Unsupported YouTube URL format")
 
     # ⚠️ пока без API — просто заглушка
     # потом подключим нормальный транскрипшн
