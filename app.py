@@ -1,7 +1,6 @@
 import os
 import io
 import re
-import json
 import tempfile
 import subprocess
 from datetime import datetime
@@ -31,7 +30,7 @@ def supabase_headers():
 
 
 def update_material(material_id: str, body: dict):
-    r = requests.patch(
+    return requests.patch(
         f"{SUPABASE_URL}/rest/v1/materials",
         headers={
             **supabase_headers(),
@@ -42,7 +41,6 @@ def update_material(material_id: str, body: dict):
         json=body,
         timeout=30,
     )
-    return r
 
 
 def fetch_material(material_id: str):
@@ -62,10 +60,6 @@ def fetch_material(material_id: str):
     return rows[0]
 
 
-def strip_html(html: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")).strip()
-
-
 def normalize_source_type(value: str | None) -> str:
     raw = (value or "").strip().lower()
     if raw == "file":
@@ -73,21 +67,9 @@ def normalize_source_type(value: str | None) -> str:
     return raw
 
 
-def extract_youtube_id(url: str) -> str | None:
-    patterns = [
-        r"youtube\.com/watch\?v=([^&]+)",
-        r"youtu\.be/([^?&/]+)",
-        r"youtube\.com/shorts/([^?&/]+)",
-    ]
-    for p in patterns:
-        m = re.search(p, url)
-        if m:
-            return m.group(1)
-    return None
-
-
 def parse_vtt_to_text(vtt_text: str) -> str:
     lines = []
+
     for raw_line in (vtt_text or "").splitlines():
         line = raw_line.strip()
 
@@ -156,96 +138,54 @@ def extract_document_text(storage_path: str):
     return text
 
 
-def extract_youtube_transcript(url: str) -> str:
-    from youtube_transcript_api import YouTubeTranscriptApi
-
-    video_id = extract_youtube_id(url)
-    if not video_id:
-        raise Exception("Unsupported YouTube URL format")
-
-    ytt = YouTubeTranscriptApi()
-    fetched = ytt.fetch(video_id)
-
-    text = " ".join((snippet.text or "").strip() for snippet in fetched)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    if len(text) < 50:
-        raise Exception("YouTube transcript is too short or unavailable")
-
-    return text
-
-
-def extract_vimeo_subtitles_with_ytdlp(url: str) -> str:
+def extract_video_subtitles_with_ytdlp(url: str) -> str:
     with tempfile.TemporaryDirectory() as tmpdir:
         output_template = os.path.join(tmpdir, "video.%(ext)s")
 
-        # Сначала пробуем обычные сабы, потом авто-сабы
-        commands = [
-            [
-                "yt-dlp",
-                "--skip-download",
-                "--write-subs",
-                "--sub-langs",
-                "all",
-                "--convert-subs",
-                "vtt",
-                "-o",
-                output_template,
-                url,
-            ],
-            [
-                "yt-dlp",
-                "--skip-download",
-                "--write-auto-subs",
-                "--sub-langs",
-                "all",
-                "--convert-subs",
-                "vtt",
-                "-o",
-                output_template,
-                url,
-            ],
+        cmd = [
+            "yt-dlp",
+            "--skip-download",
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-langs",
+            "all",
+            "--convert-subs",
+            "vtt",
+            "-o",
+            output_template,
+            url,
         ]
 
-        last_error = None
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
 
-        for cmd in commands:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=180,
-            )
+        if result.returncode != 0:
+            raise Exception(f"yt-dlp failed: {result.stderr or result.stdout}")
 
-            if result.returncode != 0:
-                last_error = f"yt-dlp failed: {result.stderr or result.stdout}"
-                continue
+        vtt_files = []
+        for root, _, files in os.walk(tmpdir):
+            for f in files:
+                if f.lower().endswith(".vtt"):
+                    vtt_files.append(os.path.join(root, f))
 
-            vtt_files = []
-            for root, _, files in os.walk(tmpdir):
-                for f in files:
-                    if f.lower().endswith(".vtt"):
-                        vtt_files.append(os.path.join(root, f))
+        if not vtt_files:
+            raise Exception("No subtitle files were produced by yt-dlp")
 
-            if not vtt_files:
-                last_error = "No subtitle files were produced by yt-dlp"
-                continue
+        vtt_files.sort(key=lambda p: os.path.getsize(p), reverse=True)
+        best_file = vtt_files[0]
 
-            # Берём самый большой VTT — обычно самый полезный
-            vtt_files.sort(key=lambda p: os.path.getsize(p), reverse=True)
-            best_file = vtt_files[0]
+        with open(best_file, "r", encoding="utf-8", errors="ignore") as fh:
+            vtt_text = fh.read()
 
-            with open(best_file, "r", encoding="utf-8", errors="ignore") as fh:
-                vtt_text = fh.read()
+        text = parse_vtt_to_text(vtt_text)
+        if len(text) < 50:
+            raise Exception("Parsed subtitles are too short")
 
-            text = parse_vtt_to_text(vtt_text)
-            if len(text) < 50:
-                last_error = "Parsed Vimeo subtitles are too short"
-                continue
-
-            return text
-
-        raise Exception(last_error or "Vimeo subtitles not available")
+        return text
 
 
 def extract_video_text(source_url: str, video_provider: str | None, transcription_mode: str | None) -> str:
@@ -256,17 +196,18 @@ def extract_video_text(source_url: str, video_provider: str | None, transcriptio
         raise Exception("video source_url is empty")
 
     if mode == "auto":
-        # здесь позже будет внешний STT, пока честно не делаем вид, что уже умеем
         raise Exception("AUTO_TRANSCRIPTION_NOT_IMPLEMENTED")
 
     if mode != "subtitles":
         raise Exception(f"Unsupported video transcription_mode: {mode or 'null'}")
 
-    if provider == "youtube" or "youtube.com" in source_url or "youtu.be" in source_url:
-        return extract_youtube_transcript(source_url)
-
-    if provider == "vimeo" or "vimeo.com" in source_url:
-        return extract_vimeo_subtitles_with_ytdlp(source_url)
+    if (
+        provider in ("youtube", "vimeo")
+        or "youtube.com" in source_url
+        or "youtu.be" in source_url
+        or "vimeo.com" in source_url
+    ):
+        return extract_video_subtitles_with_ytdlp(source_url)
 
     raise Exception(f"Unsupported video provider: {provider or 'unknown'}")
 
@@ -408,9 +349,6 @@ def extract():
                         "message": "Auto transcription queued but not implemented yet",
                     }), 200
 
-                # ВАЖНО:
-                # если summary уже есть, материал остаётся usable
-                # поэтому НЕ ставим failed на весь материал
                 if existing_text:
                     update_material(material_id, {
                         "extraction_status": "extracted",
