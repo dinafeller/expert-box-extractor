@@ -2,5 +2,5 @@ requests
 flask
 pypdf
 mammoth
-youtube-transcript-api
 yt-dlp
+youtube-transcript-api==1.2.4
