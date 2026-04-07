@@ -163,13 +163,14 @@ def extract_youtube_transcript(url: str) -> str:
     if not video_id:
         raise Exception("Unsupported YouTube URL format")
 
-    # библиотека возвращает ручные или автогенерируемые субтитры, если они доступны
-    transcript = YouTubeTranscriptApi.get_transcript(video_id)
-    text = " ".join((item.get("text") or "").strip() for item in transcript)
+    ytt = YouTubeTranscriptApi()
+    fetched = ytt.fetch(video_id)
+
+    text = " ".join((snippet.text or "").strip() for snippet in fetched)
     text = re.sub(r"\s+", " ", text).strip()
 
     if len(text) < 50:
-      raise Exception("YouTube transcript is too short or unavailable")
+        raise Exception("YouTube transcript is too short or unavailable")
 
     return text
 
