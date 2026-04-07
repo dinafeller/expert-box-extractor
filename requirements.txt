@@ -1,4 +1,6 @@
-flask
 requests
+flask
 pypdf
 mammoth
+youtube-transcript-api
+yt-dlp
