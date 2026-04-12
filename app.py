@@ -1,8 +1,5 @@
 import os
 import io
-import re
-import tempfile
-import subprocess
 from datetime import datetime
 
 import requests
@@ -15,6 +12,12 @@ app.register_blueprint(build_expert_bot_bp)
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 BUCKET = os.environ.get("BUCKET", "expert-materials")
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_TRANSCRIPTION_MODEL = os.environ.get(
+    "OPENAI_TRANSCRIPTION_MODEL",
+    "gpt-4o-mini-transcribe",
+)
 
 
 @app.get("/health")
@@ -67,57 +70,51 @@ def normalize_source_type(value: str | None) -> str:
     return raw
 
 
-def parse_vtt_to_text(vtt_text: str) -> str:
-    lines = []
-
-    for raw_line in (vtt_text or "").splitlines():
-        line = raw_line.strip()
-
-        if not line:
-            continue
-        if line.upper() == "WEBVTT":
-            continue
-        if "-->" in line:
-            continue
-        if re.match(r"^\d+$", line):
-            continue
-
-        lines.append(line)
-
-    text = " ".join(lines)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def extract_document_text(storage_path: str):
-    r2 = requests.post(
+def sign_storage_path(storage_path: str):
+    r = requests.post(
         f"{SUPABASE_URL}/storage/v1/object/sign/{BUCKET}/{storage_path}",
         headers=supabase_headers(),
         json={"expiresIn": 600},
         timeout=30,
     )
-    if r2.status_code not in (200, 201):
-        raise Exception(f"sign failed: {r2.status_code} - {r2.text}")
+    if r.status_code not in (200, 201):
+        raise Exception(f"sign failed: {r.status_code} - {r.text}")
 
-    sign_json = r2.json()
-    signed_path = sign_json.get("signedURL") or sign_json.get("signedUrl")
+    payload = r.json()
+    signed_path = payload.get("signedURL") or payload.get("signedUrl")
     if not signed_path:
         raise Exception("sign did not return signedURL")
 
-    file_url = f"{SUPABASE_URL}/storage/v1{signed_path}"
+    return f"{SUPABASE_URL}/storage/v1{signed_path}"
 
-    file_resp = requests.get(file_url, timeout=60)
-    if file_resp.status_code != 200:
-        raise Exception(f"download failed: {file_resp.status_code}")
 
-    content_type = (file_resp.headers.get("content-type") or "").lower()
-    blob = file_resp.content
+def download_binary(url: str, timeout: int = 180) -> tuple[bytes, str]:
+    r = requests.get(
+        url,
+        timeout=timeout,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; ExpertBoxBot/1.0)",
+        },
+        stream=False,
+        allow_redirects=True,
+    )
+    if r.status_code != 200:
+        raise Exception(f"download failed: {r.status_code}")
+
+    content_type = (r.headers.get("content-type") or "").lower()
+    return r.content, content_type
+
+
+def extract_document_text(storage_path: str):
+    file_url = sign_storage_path(storage_path)
+    blob, content_type = download_binary(file_url, timeout=120)
     lower_path = storage_path.lower()
 
     text = ""
 
     if "pdf" in content_type or lower_path.endswith(".pdf"):
         from pypdf import PdfReader
+
         reader = PdfReader(io.BytesIO(blob))
         parts = []
         for page in reader.pages:
@@ -126,6 +123,7 @@ def extract_document_text(storage_path: str):
 
     elif "wordprocessingml.document" in content_type or lower_path.endswith(".docx"):
         import mammoth
+
         result = mammoth.extract_raw_text(io.BytesIO(blob))
         text = (result.value or "").strip()
 
@@ -138,78 +136,68 @@ def extract_document_text(storage_path: str):
     return text
 
 
-def extract_video_subtitles_with_ytdlp(url: str) -> str:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_template = os.path.join(tmpdir, "video.%(ext)s")
+def transcribe_with_openai(source_bytes: bytes, filename: str, content_type: str | None = None) -> str:
+    if not OPENAI_API_KEY:
+        raise Exception("Missing OPENAI_API_KEY")
 
-        cmd = [
-            "yt-dlp",
-            "--skip-download",
-            "--write-subs",
-            "--write-auto-subs",
-            "--sub-langs",
-            "all",
-            "--convert-subs",
-            "vtt",
-            "-o",
-            output_template,
-            url,
-        ]
+    files = {
+        "file": (filename, source_bytes, content_type or "application/octet-stream"),
+    }
+    data = {
+        "model": OPENAI_TRANSCRIPTION_MODEL,
+    }
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
+    r = requests.post(
+        "https://api.openai.com/v1/audio/transcriptions",
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+        },
+        files=files,
+        data=data,
+        timeout=600,
+    )
 
-        if result.returncode != 0:
-            raise Exception(f"yt-dlp failed: {result.stderr or result.stdout}")
+    if r.status_code != 200:
+        raise Exception(f"OpenAI transcription failed: {r.status_code} - {r.text}")
 
-        vtt_files = []
-        for root, _, files in os.walk(tmpdir):
-            for f in files:
-                if f.lower().endswith(".vtt"):
-                    vtt_files.append(os.path.join(root, f))
+    payload = r.json()
+    text = (payload.get("text") or "").strip()
 
-        if not vtt_files:
-            raise Exception("No subtitle files were produced by yt-dlp")
+    if len(text) < 20:
+        raise Exception("OpenAI transcript too short or empty")
 
-        vtt_files.sort(key=lambda p: os.path.getsize(p), reverse=True)
-        best_file = vtt_files[0]
-
-        with open(best_file, "r", encoding="utf-8", errors="ignore") as fh:
-            vtt_text = fh.read()
-
-        text = parse_vtt_to_text(vtt_text)
-        if len(text) < 50:
-            raise Exception("Parsed subtitles are too short")
-
-        return text
+    return text
 
 
-def extract_video_text(source_url: str, video_provider: str | None, transcription_mode: str | None) -> str:
-    provider = (video_provider or "").strip().lower()
-    mode = (transcription_mode or "").strip().lower()
+def guess_extension_from_url_and_type(source_url: str, content_type: str | None) -> str:
+    lower_url = (source_url or "").lower()
+    lower_type = (content_type or "").lower()
 
-    if not source_url:
-        raise Exception("video source_url is empty")
+    if ".mp4" in lower_url or "video/mp4" in lower_type:
+        return "mp4"
+    if ".m4a" in lower_url or "audio/mp4" in lower_type:
+        return "m4a"
+    if ".mp3" in lower_url or "audio/mpeg" in lower_type:
+        return "mp3"
+    if ".wav" in lower_url or "audio/wav" in lower_type or "audio/x-wav" in lower_type:
+        return "wav"
+    if ".webm" in lower_url or "video/webm" in lower_type or "audio/webm" in lower_type:
+        return "webm"
+    if ".ogg" in lower_url or "audio/ogg" in lower_type:
+        return "ogg"
+    return "mp4"
 
-    if mode == "auto":
-        raise Exception("AUTO_TRANSCRIPTION_NOT_IMPLEMENTED")
 
-    if mode != "subtitles":
-        raise Exception(f"Unsupported video transcription_mode: {mode or 'null'}")
+def extract_video_text_auto(source_url: str, video_provider: str | None) -> str:
+    # На этом этапе берём URL как есть и пытаемся скачать бинарник.
+    # Для прямых mp4/audio URL это работает сразу.
+    # Если YouTube/Vimeo page URL не отдают медиа как файл, следующим шагом
+    # добавим извлечение прямого media URL через yt-dlp, не меняя остальную архитектуру.
+    blob, content_type = download_binary(source_url, timeout=240)
+    ext = guess_extension_from_url_and_type(source_url, content_type)
+    filename = f"video_input.{ext}"
 
-    if (
-        provider in ("youtube", "vimeo")
-        or "youtube.com" in source_url
-        or "youtu.be" in source_url
-        or "vimeo.com" in source_url
-    ):
-        return extract_video_subtitles_with_ytdlp(source_url)
-
-    raise Exception(f"Unsupported video provider: {provider or 'unknown'}")
+    return transcribe_with_openai(blob, filename, content_type)
 
 
 @app.post("/extract")
@@ -230,7 +218,7 @@ def extract():
         storage_path = mat.get("storage_path")
         source_url = mat.get("source_url")
         video_provider = mat.get("video_provider")
-        transcription_mode = mat.get("transcription_mode")
+        transcription_mode = (mat.get("transcription_mode") or "").strip().lower()
         existing_text = (mat.get("extracted_text") or "").strip()
 
         # ---------- DOCUMENT ----------
@@ -241,6 +229,11 @@ def extract():
                     "extraction_error": "material.storage_path is empty",
                 })
                 return jsonify({"error": "material.storage_path is empty"}), 400
+
+            update_material(material_id, {
+                "extraction_status": "extracting",
+                "extraction_error": None,
+            })
 
             text = extract_document_text(storage_path).strip()
 
@@ -298,10 +291,24 @@ def extract():
             })
 
             try:
-                text = extract_video_text(
+                if transcription_mode != "auto":
+                    update_material(material_id, {
+                        "extraction_status": "extracted",
+                        "transcription_status": "not_requested",
+                        "transcription_error": None,
+                        "extraction_error": None,
+                        "extracted_at": datetime.utcnow().isoformat(),
+                    })
+                    return jsonify({
+                        "ok": True,
+                        "material_id": material_id,
+                        "type": "video",
+                        "message": "No auto transcription requested",
+                    }), 200
+
+                text = extract_video_text_auto(
                     source_url=source_url,
                     video_provider=video_provider,
-                    transcription_mode=transcription_mode,
                 ).strip()
 
                 if not text or len(text) < 50:
@@ -311,7 +318,7 @@ def extract():
                     "extracted_text": text,
                     "extraction_status": "extracted",
                     "transcription_status": "done",
-                    "transcript_source": "subtitles",
+                    "transcript_source": "auto_api",
                     "transcription_error": None,
                     "extraction_error": None,
                     "extracted_at": datetime.utcnow().isoformat(),
@@ -335,20 +342,7 @@ def extract():
             except Exception as e:
                 msg = str(e)
 
-                if msg == "AUTO_TRANSCRIPTION_NOT_IMPLEMENTED":
-                    update_material(material_id, {
-                        "extraction_status": "pending",
-                        "transcription_status": "queued",
-                        "transcription_error": None,
-                        "extraction_error": None,
-                    })
-                    return jsonify({
-                        "ok": True,
-                        "material_id": material_id,
-                        "type": "video",
-                        "message": "Auto transcription queued but not implemented yet",
-                    }), 200
-
+                # Если summary уже есть — материал usable, transcript enhancement просто не удался
                 if existing_text:
                     update_material(material_id, {
                         "extraction_status": "extracted",
@@ -361,7 +355,7 @@ def extract():
                         "material_id": material_id,
                         "type": "video",
                         "warning": msg,
-                        "note": "Transcript failed, existing summary kept",
+                        "note": "Auto transcription failed, existing summary kept",
                     }), 200
 
                 update_material(material_id, {
