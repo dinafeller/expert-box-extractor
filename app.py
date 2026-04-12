@@ -1,5 +1,8 @@
 import os
 import io
+import glob
+import tempfile
+import subprocess
 from datetime import datetime
 
 import requests
@@ -169,34 +172,105 @@ def transcribe_with_openai(source_bytes: bytes, filename: str, content_type: str
     return text
 
 
-def guess_extension_from_url_and_type(source_url: str, content_type: str | None) -> str:
-    lower_url = (source_url or "").lower()
-    lower_type = (content_type or "").lower()
+def guess_filename_from_content_type(content_type: str | None, default_name: str = "media_input") -> str:
+    ct = (content_type or "").lower()
 
-    if ".mp4" in lower_url or "video/mp4" in lower_type:
-        return "mp4"
-    if ".m4a" in lower_url or "audio/mp4" in lower_type:
-        return "m4a"
-    if ".mp3" in lower_url or "audio/mpeg" in lower_type:
-        return "mp3"
-    if ".wav" in lower_url or "audio/wav" in lower_type or "audio/x-wav" in lower_type:
-        return "wav"
-    if ".webm" in lower_url or "video/webm" in lower_type or "audio/webm" in lower_type:
-        return "webm"
-    if ".ogg" in lower_url or "audio/ogg" in lower_type:
-        return "ogg"
-    return "mp4"
+    if "audio/mpeg" in ct:
+        return f"{default_name}.mp3"
+    if "audio/mp4" in ct:
+        return f"{default_name}.m4a"
+    if "audio/wav" in ct or "audio/x-wav" in ct:
+        return f"{default_name}.wav"
+    if "audio/ogg" in ct:
+        return f"{default_name}.ogg"
+    if "audio/webm" in ct or "video/webm" in ct:
+        return f"{default_name}.webm"
+    if "video/mp4" in ct:
+        return f"{default_name}.mp4"
+
+    return f"{default_name}.mp4"
+
+
+def is_youtube_or_vimeo(provider: str | None, source_url: str) -> bool:
+    p = (provider or "").strip().lower()
+    u = (source_url or "").lower()
+
+    return (
+        p in ("youtube", "vimeo")
+        or "youtube.com" in u
+        or "youtu.be" in u
+        or "vimeo.com" in u
+    )
+
+
+def download_audio_with_ytdlp(source_url: str) -> tuple[bytes, str, str]:
+    """
+    Скачивает audio-only трек для YouTube/Vimeo через yt-dlp.
+    Не требует ffmpeg: берём bestaudio как есть.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_template = os.path.join(tmpdir, "audio.%(ext)s")
+
+        cmd = [
+            "yt-dlp",
+            "-f",
+            "bestaudio/best",
+            "--no-playlist",
+            "-o",
+            output_template,
+            source_url,
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+
+        if result.returncode != 0:
+            raise Exception(f"yt-dlp audio download failed: {result.stderr or result.stdout}")
+
+        files = []
+        for path in glob.glob(os.path.join(tmpdir, "audio.*")):
+            if os.path.isfile(path):
+                files.append(path)
+
+        if not files:
+            raise Exception("yt-dlp did not produce an audio file")
+
+        files.sort(key=lambda p: os.path.getsize(p), reverse=True)
+        best_file = files[0]
+
+        with open(best_file, "rb") as fh:
+            blob = fh.read()
+
+        ext = os.path.splitext(best_file)[1].lower()
+        if ext == ".mp3":
+            content_type = "audio/mpeg"
+        elif ext == ".m4a":
+            content_type = "audio/mp4"
+        elif ext == ".wav":
+            content_type = "audio/wav"
+        elif ext == ".ogg":
+            content_type = "audio/ogg"
+        elif ext == ".webm":
+            content_type = "audio/webm"
+        else:
+            content_type = "application/octet-stream"
+
+        filename = os.path.basename(best_file)
+        return blob, content_type, filename
 
 
 def extract_video_text_auto(source_url: str, video_provider: str | None) -> str:
-    # На этом этапе берём URL как есть и пытаемся скачать бинарник.
-    # Для прямых mp4/audio URL это работает сразу.
-    # Если YouTube/Vimeo page URL не отдают медиа как файл, следующим шагом
-    # добавим извлечение прямого media URL через yt-dlp, не меняя остальную архитектуру.
-    blob, content_type = download_binary(source_url, timeout=240)
-    ext = guess_extension_from_url_and_type(source_url, content_type)
-    filename = f"video_input.{ext}"
+    if is_youtube_or_vimeo(video_provider, source_url):
+        blob, content_type, filename = download_audio_with_ytdlp(source_url)
+        return transcribe_with_openai(blob, filename, content_type)
 
+    # direct media URL fallback
+    blob, content_type = download_binary(source_url, timeout=240)
+    filename = guess_filename_from_content_type(content_type, "video_input")
     return transcribe_with_openai(blob, filename, content_type)
 
 
@@ -342,7 +416,6 @@ def extract():
             except Exception as e:
                 msg = str(e)
 
-                # Если summary уже есть — материал usable, transcript enhancement просто не удался
                 if existing_text:
                     update_material(material_id, {
                         "extraction_status": "extracted",
