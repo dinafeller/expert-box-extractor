@@ -1,5 +1,9 @@
 import os
 import io
+import math
+import shutil
+import tempfile
+import subprocess
 from datetime import datetime
 
 import requests
@@ -16,8 +20,11 @@ BUCKET = os.environ.get("BUCKET", "expert-materials")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_TRANSCRIPTION_MODEL = os.environ.get(
     "OPENAI_TRANSCRIPTION_MODEL",
-    "gpt-4o-mini-transcribe",
+    "gpt-4o-transcribe",
 )
+
+# Safe margin under 25 MB
+MAX_TRANSCRIBE_BYTES = 24 * 1024 * 1024
 
 
 @app.get("/health")
@@ -163,45 +170,153 @@ def transcribe_with_openai(source_bytes: bytes, filename: str, content_type: str
     payload = r.json()
     text = (payload.get("text") or "").strip()
 
-    if len(text) < 20:
+    if len(text) < 10:
         raise Exception("OpenAI transcript too short or empty")
 
     return text
 
 
-def guess_filename(original_filename: str | None, mime_type: str | None, fallback: str = "media_input") -> str:
-    if original_filename and "." in original_filename:
-      return original_filename
-
-    mt = (mime_type or "").lower()
-
-    if "video/mp4" in mt:
-        return f"{fallback}.mp4"
-    if "video/webm" in mt:
-        return f"{fallback}.webm"
-    if "video/quicktime" in mt:
-        return f"{fallback}.mov"
-    if "audio/mpeg" in mt:
-        return f"{fallback}.mp3"
-    if "audio/mp4" in mt:
-        return f"{fallback}.m4a"
-    if "audio/wav" in mt or "audio/x-wav" in mt:
-        return f"{fallback}.wav"
-
-    return f"{fallback}.mp4"
+def require_ffmpeg():
+    if shutil.which("ffmpeg") is None:
+        raise Exception("ffmpeg is not installed in the Render environment")
+    if shutil.which("ffprobe") is None:
+        raise Exception("ffprobe is not installed in the Render environment")
 
 
-def extract_uploaded_video_text(storage_path: str, original_filename: str | None, mime_type: str | None) -> str:
+def write_temp_file(path: str, blob: bytes):
+    with open(path, "wb") as f:
+        f.write(blob)
+
+
+def get_media_duration_seconds(path: str) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise Exception(f"ffprobe failed: {result.stderr or result.stdout}")
+
+    value = (result.stdout or "").strip()
+    if not value:
+        raise Exception("ffprobe returned empty duration")
+
+    return float(value)
+
+
+def extract_audio_to_wav(input_path: str, output_path: str):
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            input_path,
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            output_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        raise Exception(f"ffmpeg audio extraction failed: {result.stderr or result.stdout}")
+
+
+def split_audio_if_needed(audio_path: str, tmpdir: str) -> list[str]:
+    size = os.path.getsize(audio_path)
+    if size <= MAX_TRANSCRIBE_BYTES:
+        return [audio_path]
+
+    duration = get_media_duration_seconds(audio_path)
+    if duration <= 0:
+        return [audio_path]
+
+    num_parts = math.ceil(size / MAX_TRANSCRIBE_BYTES)
+    segment_duration = max(30, math.ceil(duration / num_parts))
+
+    segment_pattern = os.path.join(tmpdir, "segment_%03d.wav")
+
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            audio_path,
+            "-f",
+            "segment",
+            "-segment_time",
+            str(segment_duration),
+            "-c",
+            "copy",
+            segment_pattern,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        raise Exception(f"ffmpeg segmentation failed: {result.stderr or result.stdout}")
+
+    files = sorted(
+        os.path.join(tmpdir, name)
+        for name in os.listdir(tmpdir)
+        if name.startswith("segment_") and name.endswith(".wav")
+    )
+
+    if not files:
+        raise Exception("No audio segments were created")
+
+    return files
+
+
+def transcribe_audio_file(path: str) -> str:
+    with open(path, "rb") as f:
+        blob = f.read()
+    return transcribe_with_openai(blob, os.path.basename(path), "audio/wav")
+
+
+def extract_uploaded_video_text(storage_path: str) -> str:
+    require_ffmpeg()
+
     signed_url = sign_storage_path(storage_path)
-    blob, content_type = download_binary(signed_url, timeout=240)
-    filename = guess_filename(original_filename, mime_type, "video_input")
-    return transcribe_with_openai(blob, filename, content_type or mime_type)
+    blob, _ = download_binary(signed_url, timeout=240)
 
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = os.path.join(tmpdir, "input_video.mp4")
+        audio_path = os.path.join(tmpdir, "audio.wav")
 
-def extract_remote_video_text(source_url: str, original_filename: str | None, mime_type: str | None) -> str:
-    blob, content_type = download_binary(source_url, timeout=240)
-    filename = guess_filename(original_filename, mime_type, "video_input")
-    return transcribe_with_openai(blob, filename, content_type or mime_type)
+        write_temp_file(input_path, blob)
+        extract_audio_to_wav(input_path, audio_path)
+
+        segments = split_audio_if_needed(audio_path, tmpdir)
+        parts = []
+
+        for segment_path in segments:
+            part_text = transcribe_audio_file(segment_path).strip()
+            if part_text:
+                parts.append(part_text)
+
+        text = "\n".join(parts).strip()
+        if len(text) < 20:
+            raise Exception("Final transcript too short or empty")
+
+        return text
 
 
 @app.post("/extract")
@@ -220,10 +335,8 @@ def extract():
 
         source_type = normalize_source_type(mat.get("source_type"))
         storage_path = mat.get("storage_path")
-        source_url = mat.get("source_url")
         file_path = mat.get("file_path")
-        mime_type = mat.get("mime_type")
-        original_filename = mat.get("original_filename")
+        source_url = mat.get("source_url")
         video_provider = (mat.get("video_provider") or "").strip().lower()
         transcription_mode = (mat.get("transcription_mode") or "").strip().lower()
         existing_text = (mat.get("extracted_text") or "").strip()
@@ -312,22 +425,14 @@ def extract():
                     if not effective_storage_path:
                         raise Exception("material.storage_path is empty for uploaded video")
 
-                    text = extract_uploaded_video_text(
-                        effective_storage_path,
-                        original_filename,
-                        mime_type,
-                    ).strip()
+                    text = extract_uploaded_video_text(effective_storage_path).strip()
                 else:
                     if not source_url:
                         raise Exception("material.source_url is empty")
 
-                    text = extract_remote_video_text(
-                        source_url,
-                        original_filename,
-                        mime_type,
-                    ).strip()
+                    raise Exception("Remote video transcription is not supported in this build")
 
-                if not text or len(text) < 50:
+                if not text or len(text) < 20:
                     raise Exception("Video transcript is too short")
 
                 save_resp = update_material(material_id, {
