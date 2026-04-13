@@ -285,10 +285,43 @@ def split_audio_if_needed(audio_path: str, tmpdir: str) -> list[str]:
     return files
 
 
+def transcript_is_suspiciously_short(text: str, duration_sec: float) -> bool:
+    text = (text or "").strip()
+
+    if not text:
+        return True
+
+    if duration_sec <= 15:
+        return len(text) < 15
+
+    if duration_sec <= 30:
+        return len(text) < 40
+
+    if duration_sec <= 60:
+        return len(text) < 90
+
+    if duration_sec <= 120:
+        return len(text) < 180
+
+    if duration_sec <= 300:
+        return len(text) < 400
+
+    return len(text) < int(duration_sec * 1.5)
+
+
 def transcribe_audio_file(path: str) -> str:
     with open(path, "rb") as f:
         blob = f.read()
-    return transcribe_with_openai(blob, os.path.basename(path), "audio/wav")
+
+    duration_sec = get_media_duration_seconds(path)
+    text = transcribe_with_openai(blob, os.path.basename(path), "audio/wav").strip()
+
+    if transcript_is_suspiciously_short(text, duration_sec):
+        raise Exception(
+            f"Transcript suspiciously short for duration {duration_sec:.1f}s: got {len(text)} chars"
+        )
+
+    return text
 
 
 def extract_uploaded_video_text(storage_path: str) -> str:
@@ -460,30 +493,17 @@ def extract():
                     "preview": text[:2000],
                 }), 200
 
-            except Exception as e:
+                        except Exception as e:
                 msg = str(e)
-
-                if existing_text:
-                    update_material(material_id, {
-                        "extraction_status": "extracted",
-                        "transcription_status": "failed",
-                        "transcription_error": msg,
-                        "extraction_error": None,
-                    })
-                    return jsonify({
-                        "ok": False,
-                        "material_id": material_id,
-                        "type": "video",
-                        "warning": msg,
-                        "note": "Auto transcription failed, existing summary kept",
-                    }), 200
 
                 update_material(material_id, {
                     "extraction_status": "failed",
                     "transcription_status": "failed",
                     "transcription_error": msg,
                     "extraction_error": msg,
+                    "extracted_text": None,
                 })
+
                 return jsonify({
                     "error": "video extraction failed",
                     "details": msg,
