@@ -493,7 +493,7 @@ def extract():
                     "preview": text[:2000],
                 }), 200
 
-                        except Exception as e:
+            except Exception as e:
                 msg = str(e)
 
                 update_material(material_id, {
