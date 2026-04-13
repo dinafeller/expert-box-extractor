@@ -427,7 +427,7 @@ def extract():
                 "preview": text[:2000],
             }), 200
 
-        # ---------- VIDEO ----------
+                # ---------- VIDEO ----------
         if source_type == "video":
             update_material(material_id, {
                 "extraction_status": "extracting",
