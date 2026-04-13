@@ -1,8 +1,5 @@
 import os
 import io
-import glob
-import tempfile
-import subprocess
 from datetime import datetime
 
 import requests
@@ -172,106 +169,39 @@ def transcribe_with_openai(source_bytes: bytes, filename: str, content_type: str
     return text
 
 
-def guess_filename_from_content_type(content_type: str | None, default_name: str = "media_input") -> str:
-    ct = (content_type or "").lower()
+def guess_filename(original_filename: str | None, mime_type: str | None, fallback: str = "media_input") -> str:
+    if original_filename and "." in original_filename:
+      return original_filename
 
-    if "audio/mpeg" in ct:
-        return f"{default_name}.mp3"
-    if "audio/mp4" in ct:
-        return f"{default_name}.m4a"
-    if "audio/wav" in ct or "audio/x-wav" in ct:
-        return f"{default_name}.wav"
-    if "audio/ogg" in ct:
-        return f"{default_name}.ogg"
-    if "audio/webm" in ct or "video/webm" in ct:
-        return f"{default_name}.webm"
-    if "video/mp4" in ct:
-        return f"{default_name}.mp4"
+    mt = (mime_type or "").lower()
 
-    return f"{default_name}.mp4"
+    if "video/mp4" in mt:
+        return f"{fallback}.mp4"
+    if "video/webm" in mt:
+        return f"{fallback}.webm"
+    if "video/quicktime" in mt:
+        return f"{fallback}.mov"
+    if "audio/mpeg" in mt:
+        return f"{fallback}.mp3"
+    if "audio/mp4" in mt:
+        return f"{fallback}.m4a"
+    if "audio/wav" in mt or "audio/x-wav" in mt:
+        return f"{fallback}.wav"
 
-
-def is_youtube_or_vimeo(provider: str | None, source_url: str) -> bool:
-    p = (provider or "").strip().lower()
-    u = (source_url or "").lower()
-
-    return (
-        p in ("youtube", "vimeo")
-        or "youtube.com" in u
-        or "youtu.be" in u
-        or "vimeo.com" in u
-    )
+    return f"{fallback}.mp4"
 
 
-def download_audio_with_ytdlp(source_url: str) -> tuple[bytes, str, str]:
-    """
-    Скачивает audio-only трек для YouTube/Vimeo через yt-dlp.
-    Не требует ffmpeg: берём bestaudio как есть.
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_template = os.path.join(tmpdir, "audio.%(ext)s")
-
-        cmd = [
-            "yt-dlp",
-            "-f",
-            "bestaudio/best",
-            "--no-playlist",
-            "-o",
-            output_template,
-            source_url,
-        ]
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-
-        if result.returncode != 0:
-            raise Exception(f"yt-dlp audio download failed: {result.stderr or result.stdout}")
-
-        files = []
-        for path in glob.glob(os.path.join(tmpdir, "audio.*")):
-            if os.path.isfile(path):
-                files.append(path)
-
-        if not files:
-            raise Exception("yt-dlp did not produce an audio file")
-
-        files.sort(key=lambda p: os.path.getsize(p), reverse=True)
-        best_file = files[0]
-
-        with open(best_file, "rb") as fh:
-            blob = fh.read()
-
-        ext = os.path.splitext(best_file)[1].lower()
-        if ext == ".mp3":
-            content_type = "audio/mpeg"
-        elif ext == ".m4a":
-            content_type = "audio/mp4"
-        elif ext == ".wav":
-            content_type = "audio/wav"
-        elif ext == ".ogg":
-            content_type = "audio/ogg"
-        elif ext == ".webm":
-            content_type = "audio/webm"
-        else:
-            content_type = "application/octet-stream"
-
-        filename = os.path.basename(best_file)
-        return blob, content_type, filename
+def extract_uploaded_video_text(storage_path: str, original_filename: str | None, mime_type: str | None) -> str:
+    signed_url = sign_storage_path(storage_path)
+    blob, content_type = download_binary(signed_url, timeout=240)
+    filename = guess_filename(original_filename, mime_type, "video_input")
+    return transcribe_with_openai(blob, filename, content_type or mime_type)
 
 
-def extract_video_text_auto(source_url: str, video_provider: str | None) -> str:
-    if is_youtube_or_vimeo(video_provider, source_url):
-        blob, content_type, filename = download_audio_with_ytdlp(source_url)
-        return transcribe_with_openai(blob, filename, content_type)
-
-    # direct media URL fallback
+def extract_remote_video_text(source_url: str, original_filename: str | None, mime_type: str | None) -> str:
     blob, content_type = download_binary(source_url, timeout=240)
-    filename = guess_filename_from_content_type(content_type, "video_input")
-    return transcribe_with_openai(blob, filename, content_type)
+    filename = guess_filename(original_filename, mime_type, "video_input")
+    return transcribe_with_openai(blob, filename, content_type or mime_type)
 
 
 @app.post("/extract")
@@ -291,13 +221,18 @@ def extract():
         source_type = normalize_source_type(mat.get("source_type"))
         storage_path = mat.get("storage_path")
         source_url = mat.get("source_url")
-        video_provider = mat.get("video_provider")
+        file_path = mat.get("file_path")
+        mime_type = mat.get("mime_type")
+        original_filename = mat.get("original_filename")
+        video_provider = (mat.get("video_provider") or "").strip().lower()
         transcription_mode = (mat.get("transcription_mode") or "").strip().lower()
         existing_text = (mat.get("extracted_text") or "").strip()
 
         # ---------- DOCUMENT ----------
         if source_type == "document":
-            if not storage_path:
+            effective_storage_path = storage_path or file_path
+
+            if not effective_storage_path:
                 update_material(material_id, {
                     "extraction_status": "failed",
                     "extraction_error": "material.storage_path is empty",
@@ -309,7 +244,7 @@ def extract():
                 "extraction_error": None,
             })
 
-            text = extract_document_text(storage_path).strip()
+            text = extract_document_text(effective_storage_path).strip()
 
             if text and len(text) >= 50:
                 save_resp = update_material(material_id, {
@@ -348,15 +283,6 @@ def extract():
 
         # ---------- VIDEO ----------
         if source_type == "video":
-            if not source_url:
-                update_material(material_id, {
-                    "extraction_status": "failed",
-                    "transcription_status": "failed",
-                    "transcription_error": "material.source_url is empty",
-                    "extraction_error": "material.source_url is empty",
-                })
-                return jsonify({"error": "material.source_url is empty"}), 400
-
             update_material(material_id, {
                 "extraction_status": "extracting",
                 "transcription_status": "processing",
@@ -380,10 +306,26 @@ def extract():
                         "message": "No auto transcription requested",
                     }), 200
 
-                text = extract_video_text_auto(
-                    source_url=source_url,
-                    video_provider=video_provider,
-                ).strip()
+                effective_storage_path = storage_path or file_path
+
+                if video_provider == "upload" or effective_storage_path:
+                    if not effective_storage_path:
+                        raise Exception("material.storage_path is empty for uploaded video")
+
+                    text = extract_uploaded_video_text(
+                        effective_storage_path,
+                        original_filename,
+                        mime_type,
+                    ).strip()
+                else:
+                    if not source_url:
+                        raise Exception("material.source_url is empty")
+
+                    text = extract_remote_video_text(
+                        source_url,
+                        original_filename,
+                        mime_type,
+                    ).strip()
 
                 if not text or len(text) < 50:
                     raise Exception("Video transcript is too short")
@@ -408,7 +350,7 @@ def extract():
                     "ok": True,
                     "material_id": material_id,
                     "type": "video",
-                    "provider": video_provider,
+                    "provider": video_provider or "upload",
                     "text_len": len(text),
                     "preview": text[:2000],
                 }), 200
