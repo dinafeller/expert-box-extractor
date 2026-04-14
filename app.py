@@ -8,6 +8,7 @@ from datetime import datetime
 
 import requests
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from src.routes.build_expert_bot import build_expert_bot_bp
 
 app = Flask(__name__)
