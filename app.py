@@ -52,6 +52,18 @@ def update_material(material_id: str, body: dict):
         timeout=30,
     )
 
+def update_expert_profile(expert_id: str, body: dict):
+    return requests.patch(
+        f"{SUPABASE_URL}/rest/v1/expert_profiles",
+        headers={
+            **supabase_headers(),
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        },
+        params={"expert_id": f"eq.{expert_id}"},
+        json=body,
+        timeout=30,
+    )
 
 def fetch_material(material_id: str):
     r = requests.get(
