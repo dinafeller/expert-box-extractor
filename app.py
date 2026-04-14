@@ -11,6 +11,7 @@ from flask import Flask, request, jsonify
 from src.routes.build_expert_bot import build_expert_bot_bp
 
 app = Flask(__name__)
+CORS(app)
 app.register_blueprint(build_expert_bot_bp)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
