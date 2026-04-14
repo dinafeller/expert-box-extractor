@@ -23,7 +23,7 @@ OPENAI_TRANSCRIPTION_MODEL = os.environ.get(
     "gpt-4o-transcribe",
 )
 
-# Safe margin under 25 MB
+# Safe margin under 25 MB request limit
 MAX_TRANSCRIBE_BYTES = 24 * 1024 * 1024
 
 
@@ -143,7 +143,11 @@ def extract_document_text(storage_path: str):
     return text
 
 
-def transcribe_with_openai(source_bytes: bytes, filename: str, content_type: str | None = None) -> str:
+def transcribe_with_openai(
+    source_bytes: bytes,
+    filename: str,
+    content_type: str | None = None,
+) -> str:
     if not OPENAI_API_KEY:
         raise Exception("Missing OPENAI_API_KEY")
 
@@ -221,6 +225,8 @@ def extract_audio_to_wav(input_path: str, output_path: str):
             "-y",
             "-i",
             input_path,
+            "-map",
+            "0:a:0?",
             "-vn",
             "-ac",
             "1",
@@ -240,13 +246,15 @@ def extract_audio_to_wav(input_path: str, output_path: str):
 
 def split_audio_if_needed(audio_path: str, tmpdir: str) -> list[str]:
     size = os.path.getsize(audio_path)
+    duration = get_media_duration_seconds(audio_path)
+
     if size <= MAX_TRANSCRIBE_BYTES:
         return [audio_path]
 
-    duration = get_media_duration_seconds(audio_path)
     if duration <= 0:
         return [audio_path]
 
+    # conservative segmentation by size estimate
     num_parts = math.ceil(size / MAX_TRANSCRIBE_BYTES)
     segment_duration = max(30, math.ceil(duration / num_parts))
 
@@ -346,6 +354,7 @@ def extract_uploaded_video_text(storage_path: str) -> str:
                 parts.append(part_text)
 
         text = "\n".join(parts).strip()
+
         if len(text) < 20:
             raise Exception("Final transcript too short or empty")
 
@@ -372,7 +381,6 @@ def extract():
         source_url = mat.get("source_url")
         video_provider = (mat.get("video_provider") or "").strip().lower()
         transcription_mode = (mat.get("transcription_mode") or "").strip().lower()
-        existing_text = (mat.get("extracted_text") or "").strip()
 
         # ---------- DOCUMENT ----------
         if source_type == "document":
@@ -427,7 +435,7 @@ def extract():
                 "preview": text[:2000],
             }), 200
 
-                # ---------- VIDEO ----------
+        # ---------- VIDEO ----------
         if source_type == "video":
             update_material(material_id, {
                 "extraction_status": "extracting",
