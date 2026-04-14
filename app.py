@@ -372,6 +372,70 @@ def extract_uploaded_video_text(storage_path: str) -> str:
 
         return text
 
+@app.post("/save-persona")
+def save_persona():
+    data = request.get_json(force=True, silent=True) or {}
+
+    expert_id = data.get("expert_id")
+    persona_intro = (data.get("persona_intro") or "").strip()
+    persona_tone = (data.get("persona_tone") or "").strip()
+    persona_length = (data.get("persona_length") or "").strip()
+    escalation_rules = (data.get("escalation_rules") or "").strip()
+
+    if not expert_id:
+        return jsonify({"error": "expert_id is required"}), 400
+
+    if not persona_intro:
+        return jsonify({"error": "persona_intro is required"}), 400
+
+    if not persona_tone:
+        return jsonify({"error": "persona_tone is required"}), 400
+
+    if not persona_length:
+        return jsonify({"error": "persona_length is required"}), 400
+
+    if not escalation_rules:
+        return jsonify({"error": "escalation_rules is required"}), 400
+
+    try:
+        from src.services.persona import build_persona_prompt
+
+        persona_prompt = build_persona_prompt(
+            persona_intro=persona_intro,
+            persona_tone=persona_tone,
+            persona_length=persona_length,
+            escalation_rules=escalation_rules,
+        )
+
+        resp = update_expert_profile(expert_id, {
+            "persona_intro": persona_intro,
+            "persona_tone": persona_tone,
+            "persona_length": persona_length,
+            "escalation_rules": escalation_rules,
+            "persona_prompt": persona_prompt,
+        })
+
+        if resp.status_code not in (200, 204):
+            return jsonify({
+                "error": "failed to update expert profile",
+                "status": resp.status_code,
+                "body": resp.text,
+            }), 500
+
+        rows = resp.json() if resp.content else []
+
+        return jsonify({
+            "ok": True,
+            "expert_id": expert_id,
+            "persona_prompt": persona_prompt,
+            "profile": rows[0] if rows else None,
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "error": "failed to save persona",
+            "details": str(e),
+        }), 500
 
 @app.post("/extract")
 def extract():
