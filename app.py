@@ -420,11 +420,7 @@ def extract_uploaded_video_text(storage_path: str) -> str:
 
         return text
 
-        if len(text) < 20:
-            raise Exception("Final transcript too short or empty")
-
-        return text
-
+        
 @app.post("/save-persona")
 def save_persona():
     data = request.get_json(force=True, silent=True) or {}
