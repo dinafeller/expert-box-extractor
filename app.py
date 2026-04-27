@@ -193,6 +193,47 @@ def transcribe_with_openai(
 
     return text
 
+def improve_transcript(text: str) -> str:
+    if not OPENAI_API_KEY:
+        return text
+
+    prompt = f"""
+Clean and improve this transcript.
+
+Rules:
+- fix recognition errors
+- keep original meaning
+- do NOT shorten
+- remove repetitions and noise
+- make it readable and structured
+
+Transcript:
+{text}
+"""
+
+    r = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.2,
+        },
+        timeout=120,
+    )
+
+    if r.status_code != 200:
+        return text
+
+    try:
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except:
+        return text
 
 def require_ffmpeg():
     if shutil.which("ffmpeg") is None:
@@ -367,7 +408,17 @@ def extract_uploaded_video_text(storage_path: str) -> str:
             if part_text:
                 parts.append(part_text)
 
-        text = "\n".join(parts).strip()
+        raw_text = "\n".join(parts).strip()
+
+        if len(raw_text) < 20:
+            raise Exception("Final transcript too short or empty")
+
+        text = improve_transcript(raw_text).strip()
+
+        if len(text) < 20:
+            raise Exception("Improved transcript too short or empty")
+
+        return text
 
         if len(text) < 20:
             raise Exception("Final transcript too short or empty")
